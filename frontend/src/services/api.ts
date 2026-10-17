@@ -372,5 +372,12 @@ export const api = {
       headers: { ...getAuthHeader() }
     });
     return handleResponse<{ status: string; count: number; data: any[] }>(res);
+  },
+
+  // System & Health Status
+  async getHealth() {
+    const res = await fetch(`${API_BASE}/health`);
+    return handleResponse<any>(res);
   }
 };
+

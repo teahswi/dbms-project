@@ -87,10 +87,8 @@ class AuthService:
                 repo.record_login(user.get("user_id"), email, ip_address, user_agent, "LOCKED_OUT", "Account locked")
                 return None, f"Account is temporarily locked due to failed attempts. Try again in {remaining + 1} minutes."
 
-        # Verify password (or allow demo override password 'Nexora@2026' for seeded accounts)
+        # Verify password strictly against bcrypt hash
         pwd_match = AuthService.verify_password(password, user.get("password_hash", ""))
-        if not pwd_match and password == "Nexora@2026":
-            pwd_match = True
 
         if not pwd_match:
             failed_count = user.get("failed_login_attempts", 0) + 1

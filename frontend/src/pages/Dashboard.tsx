@@ -66,12 +66,12 @@ export const Dashboard: React.FC = () => {
     );
   }
 
-  // Visual severity distribution
+  // Dynamic visual severity distribution computed from real database records
   const severityDistribution = [
-    { name: 'Critical', value: metrics.critical_vulnerabilities, color: '#ef4444' },
-    { name: 'High', value: 84, color: '#f97316' },
-    { name: 'Medium', value: 162, color: '#f59e0b' },
-    { name: 'Low', value: 92, color: '#0ea5e9' }
+    { name: 'Critical', value: metrics.critical_vulnerabilities || 0, color: '#ef4444' },
+    { name: 'High', value: metrics.high_vulnerabilities || 0, color: '#f97316' },
+    { name: 'Medium', value: metrics.medium_vulnerabilities || 0, color: '#f59e0b' },
+    { name: 'Low', value: metrics.low_vulnerabilities || 0, color: '#0ea5e9' }
   ];
 
   const getHeatmapColor = (likelihood: number, impact: number) => {
@@ -96,9 +96,18 @@ export const Dashboard: React.FC = () => {
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 border border-cyan-700/40 text-cyan-400 font-semibold">
                 {user?.role}
               </span>
+              {metrics.backend_info && (
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold ${
+                  metrics.backend_info.is_fallback
+                    ? 'bg-amber-950 border-amber-700/60 text-amber-300'
+                    : 'bg-emerald-950 border-emerald-700/60 text-emerald-300'
+                }`}>
+                  {metrics.backend_info.display_name}
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-400 font-mono mt-0.5">
-              Nexora Security Operations Status: Active Defenses Operational &bull; 760 Total Managed Assets
+              Nexora Security Operations Status: Active Defenses Operational &bull; {metrics.asset_count} Managed Assets
             </p>
           </div>
         </div>
@@ -110,6 +119,7 @@ export const Dashboard: React.FC = () => {
           <span className="text-cyan-400 font-bold">{metrics.mean_time_to_remediate_hours} hrs</span>
         </div>
       </div>
+
 
       {/* Primary KPI Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

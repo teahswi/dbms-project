@@ -225,3 +225,9 @@ class BaseRepository(ABC):
     @abstractmethod
     def get_executive_posture(self) -> Dict[str, Any]:
         pass
+
+    @abstractmethod
+    def get_backend_info(self) -> Dict[str, Any]:
+        """Returns details about the active database engine, connection state, and fallback status."""
+        pass
+

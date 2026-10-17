@@ -28,6 +28,7 @@ def get_vulnerability(finding_id):
     return jsonify({"status": "success", "data": vuln}), 200
 
 @vulns_bp.route("/calculate-priority", methods=["POST"])
+@vulns_bp.route("/calculate-preview", methods=["POST"])
 @jwt_required()
 def calculate_score_preview():
     data = request.get_json() or {}
@@ -37,7 +38,10 @@ def calculate_score_preview():
     eff = float(data.get("control_effectiveness", 0.0))
 
     score, bucket, breakdown = calculate_priority_score(cvss, crit, exploit, eff)
+    breakdown["priority_score"] = score
+    breakdown["severity"] = bucket
     return jsonify({"status": "success", "data": breakdown}), 200
+
 
 @vulns_bp.route("", methods=["POST"])
 @jwt_required()

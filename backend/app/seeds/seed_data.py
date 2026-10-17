@@ -519,10 +519,283 @@ def _seed_sql(repo):
         """))
 
 def _seed_mongo(repo):
-    # If in fallback or native mongo, populate document collections
     print("  -> Populating MongoDB collections with Nexora dataset...")
-    # Populate users, assets, vulnerabilities, alerts, incidents, frameworks, risks
-    pass
+
+    def _insert(col, docs):
+        if getattr(repo, "is_fallback", False):
+            repo.store[col] = list(docs)
+            repo._id_counters[col] = len(docs) + 1
+        else:
+            repo.db[col].delete_many({})
+            if docs:
+                repo.db[col].insert_many(docs)
+
+    default_pwd_hash = bcrypt.hashpw(b"Nexora@2026", bcrypt.gensalt(10)).decode('utf-8')
+
+    # 1. Users & RBAC
+    users = [
+        {"user_id": 1, "department": "Security Operations", "email": "analyst@nexora.test", "password_hash": default_pwd_hash, "full_name": "Aarav Sharma", "title": "Lead SOC Analyst", "role": "Security Analyst", "role_name": "Security Analyst", "permissions": ["ASSET_VIEW", "VULN_VIEW", "ALERT_TRIAGE", "INCIDENT_MANAGE"], "is_active": True, "failed_login_attempts": 0, "created_at": datetime.utcnow().isoformat()},
+        {"user_id": 2, "department": "IT Infrastructure", "email": "infra@nexora.test", "password_hash": default_pwd_hash, "full_name": "Priya Nair", "title": "Senior Systems Engineer", "role": "IT Infrastructure Engineer", "role_name": "IT Infrastructure Engineer", "permissions": ["ASSET_VIEW", "ASSET_EDIT", "VULN_VIEW", "VULN_REMEDIATE"], "is_active": True, "failed_login_attempts": 0, "created_at": datetime.utcnow().isoformat()},
+        {"user_id": 3, "department": "Governance & Compliance", "email": "auditor@nexora.test", "password_hash": default_pwd_hash, "full_name": "Rohan Deshmukh", "title": "GRC & Audit Specialist", "role": "Compliance Auditor", "role_name": "Compliance Auditor", "permissions": ["ASSET_VIEW", "VULN_VIEW", "AUDIT_ASSESS"], "is_active": True, "failed_login_attempts": 0, "created_at": datetime.utcnow().isoformat()},
+        {"user_id": 4, "department": "Security Operations", "email": "manager@nexora.test", "password_hash": default_pwd_hash, "full_name": "Kavita Reddy", "title": "Head of Information Security", "role": "Security Manager", "role_name": "Security Manager", "permissions": ["ASSET_VIEW", "VULN_VIEW", "ALERT_TRIAGE", "INCIDENT_MANAGE", "AUDIT_ASSESS", "RISK_APPROVE"], "is_active": True, "failed_login_attempts": 0, "created_at": datetime.utcnow().isoformat()},
+        {"user_id": 5, "department": "IT Infrastructure", "email": "admin@nexora.test", "password_hash": default_pwd_hash, "full_name": "Vikram Patel", "title": "Enterprise Security Administrator", "role": "Admin", "role_name": "Admin", "permissions": ["ASSET_VIEW", "ASSET_EDIT", "VULN_VIEW", "VULN_REMEDIATE", "VULN_VERIFY", "ALERT_TRIAGE", "INCIDENT_MANAGE", "AUDIT_ASSESS", "RISK_APPROVE", "ADMIN_ACCESS"], "is_active": True, "failed_login_attempts": 0, "created_at": datetime.utcnow().isoformat()}
+    ]
+    _insert("users", users)
+
+    # 2. Assets (760)
+    assets = []
+    server_roles = ['prod-api', 'k8s-worker', 'auth-srv', 'db-primary', 'payment-gw', 'redis-cache', 'log-collector', 'vpn-gw']
+    dept_names = ['Security Operations', 'IT Infrastructure', 'Engineering & DevOps', 'Finance & Payroll', 'Governance & Compliance']
+
+    aid = 1
+    for s_idx in range(1, 121):
+        role_name = server_roles[(s_idx - 1) % len(server_roles)]
+        hostname = f"nx-{role_name}-{s_idx:03d}.nexora.corp"
+        ip = f"10.20.{s_idx // 256}.{s_idx % 254 + 1}"
+        crit = 5 if 'prod' in role_name or 'db' in role_name or 'payment' in role_name else (4 if 'auth' in role_name or 'k8s' in role_name else 3)
+        dept = 'Finance & Payroll' if 'payment' in role_name else ('Engineering & DevOps' if 'api' in role_name or 'k8s' in role_name else 'IT Infrastructure')
+        assets.append({
+            "asset_id": aid,
+            "hostname": hostname,
+            "ip_address": ip,
+            "mac_address": "52:54:00:12:34:56",
+            "asset_type": "SERVER",
+            "criticality": crit,
+            "environment": "PRODUCTION",
+            "lifecycle_status": "ACTIVE",
+            "department": dept,
+            "os_name": "Linux",
+            "os_version": "Ubuntu 22.04 LTS",
+            "software_inventory": [
+                {"name": "OpenSSH", "version": "8.9p1", "vendor": "Canonical", "is_eol": False},
+                {"name": "OpenSSL", "version": "3.0.2", "vendor": "OpenSSL Project", "is_eol": False}
+            ],
+            "created_at": datetime.utcnow().isoformat()
+        })
+        aid += 1
+
+    app_names = ['Customer Portal', 'Core Billing Engine', 'Payroll Service', 'HRMS Portal', 'GitLab Enterprise',
+                 'API Gateway', 'Partner Integration Bus', 'Identity Provider', 'Data Pipeline Aggregator', 'Telephony PBX']
+    for a_idx in range(1, 41):
+        base_name = app_names[(a_idx - 1) % len(app_names)]
+        hostname = f"app-{base_name.lower().replace(' ', '-')}-{a_idx:02d}.nexora.internal"
+        ip = f"172.16.10.{a_idx}"
+        crit = 5 if 'Billing' in base_name or 'Payroll' in base_name or 'Identity' in base_name else 4
+        dept = 'Finance & Payroll' if 'Billing' in base_name or 'Payroll' in base_name else 'Engineering & DevOps'
+        assets.append({
+            "asset_id": aid,
+            "hostname": hostname,
+            "ip_address": ip,
+            "mac_address": "00:16:3e:aa:bb:cc",
+            "asset_type": "APPLICATION",
+            "criticality": crit,
+            "environment": "PRODUCTION",
+            "lifecycle_status": "ACTIVE",
+            "department": dept,
+            "os_name": "Containerized",
+            "os_version": "Docker 24.0.7",
+            "software_inventory": [{"name": base_name, "version": "2.4.1", "vendor": "Nexora In-House", "is_eol": False}],
+            "created_at": datetime.utcnow().isoformat()
+        })
+        aid += 1
+
+    offices = ['BLR', 'PUN', 'HYD']
+    for ep_idx in range(1, 601):
+        loc = offices[(ep_idx - 1) % len(offices)]
+        hostname = f"NX-{loc}-LT-{ep_idx:04d}"
+        ip = f"192.168.{10 + (ep_idx // 250)}.{ep_idx % 250 + 1}"
+        dept = dept_names[(ep_idx - 1) % len(dept_names)]
+        os_name = 'macOS Sonoma' if ep_idx % 3 == 0 else ('Windows 11 Enterprise' if ep_idx % 2 == 0 else 'Ubuntu Desktop 22.04')
+        assets.append({
+            "asset_id": aid,
+            "hostname": hostname,
+            "ip_address": ip,
+            "mac_address": "ac:de:48:00:11:22",
+            "asset_type": "ENDPOINT",
+            "criticality": 2,
+            "environment": "PRODUCTION",
+            "lifecycle_status": "ACTIVE",
+            "department": dept,
+            "os_name": os_name,
+            "os_version": "23H2",
+            "software_inventory": [{"name": "Chrome", "version": "122.0", "vendor": "Google", "is_eol": False}],
+            "created_at": datetime.utcnow().isoformat()
+        })
+        aid += 1
+    _insert("assets", assets)
+
+    # 3. CVE Catalog & Vulnerabilities (400+)
+    cve_id_list = ["CVE-2021-44228", "CVE-2024-3094", "CVE-2023-38606", "CVE-2022-22965", "CVE-2021-34527", "CVE-2023-4863"]
+    for i in range(len(cve_id_list) + 1, 201):
+        cve_id_list.append(f"CVE-2023-{10000 + i}")
+
+    vulnerabilities = []
+    # Overdue critical finding on Finance payment gateway (Asset #5)
+    overdue_due = (datetime.utcnow() - timedelta(days=12)).isoformat()
+    disc_time = (datetime.utcnow() - timedelta(days=20)).isoformat()
+    vulnerabilities.append({
+        "finding_id": 1,
+        "asset_id": 5,
+        "cve_id": "CVE-2021-44228",
+        "status": "OPEN",
+        "severity": "CRITICAL",
+        "priority_score": 97.5,
+        "discovered_at": disc_time,
+        "sla_due_date": overdue_due,
+        "remediation_title": "URGENT: Patch Log4Shell on Finance Payment Gateway 005",
+        "assigned_to_user_id": 2
+    })
+
+    fid = 2
+    for s_idx in range(1, 140):
+        cve = random.choice(cve_id_list[:50])
+        crit = 5 if s_idx <= 20 else (4 if s_idx <= 60 else 3)
+        score, sev, _ = calculate_priority_score(random.uniform(5.5, 9.8), crit, random.random() > 0.7)
+        sla_days = SLA_DAYS.get(sev, 30)
+        status = random.choice(['OPEN', 'IN_PROGRESS', 'PENDING_VERIFICATION', 'REMEDIATED'])
+        disc = (datetime.utcnow() - timedelta(days=random.randint(1, 80))).isoformat()
+        due = (datetime.utcnow() + timedelta(days=sla_days)).isoformat()
+        vulnerabilities.append({
+            "finding_id": fid,
+            "asset_id": s_idx,
+            "cve_id": cve,
+            "status": status,
+            "severity": sev,
+            "priority_score": score,
+            "discovered_at": disc,
+            "sla_due_date": due,
+            "remediation_title": f"Patch {cve} on asset #{s_idx}",
+            "assigned_to_user_id": 2
+        })
+        fid += 1
+    _insert("vulnerabilities", vulnerabilities)
+
+    # 4. Alerts & Events
+    alerts = []
+    for al_idx in range(1, 401):
+        sev = 'CRITICAL' if al_idx <= 40 else ('HIGH' if al_idx <= 120 else ('MEDIUM' if al_idx <= 260 else 'LOW'))
+        alerts.append({
+            "alert_id": al_idx,
+            "asset_id": (al_idx % 80) + 1,
+            "title": f"Alert: Anomaly detected on server #{((al_idx % 80) + 1)} ({sev})",
+            "description": "Multiple correlated security events triggered threshold rule.",
+            "severity": sev,
+            "status": random.choice(['NEW', 'TRIAGED', 'INVESTIGATING', 'ESCALATED', 'CLOSED_TP']),
+            "correlation_id": f"CORR-GRP-{(al_idx % 25) + 1:03d}",
+            "duplicate_count": random.randint(1, 14),
+            "created_at": (datetime.utcnow() - timedelta(hours=random.randint(1, 720))).isoformat()
+        })
+    _insert("alerts", alerts)
+
+    # 5. Incidents (30+)
+    incidents = []
+    inc_templates = [
+        ("INC-2026-001: Ransomware Canary Triggered on File Storage", "RANSOMWARE", "CRITICAL", 5),
+        ("INC-2026-002: Correlated Data Exfiltration Anomaly via DNS Tunneling", "DATA_EXFILTRATION", "HIGH", 8),
+        ("INC-2026-003: Credential Stuffing Attack Against Customer Auth API", "UNAUTHORIZED_ACCESS", "HIGH", 12),
+        ("INC-2026-004: Cobalt Strike Beaconing Detected on Engineering Server", "MALWARE_OUTBREAK", "CRITICAL", 20),
+        ("INC-2026-005: Spear-Phishing Campaign Targeting Finance Leadership", "PHISHING", "MEDIUM", 45),
+        ("INC-2026-006: Distributed Denial of Service on Public Ingress Gateway", "DDOS", "HIGH", 1),
+    ]
+    for i_idx in range(1, 35):
+        t_idx = (i_idx - 1) % len(inc_templates)
+        title_p, cat, sev, asset_ref = inc_templates[t_idx]
+        status = 'OPEN' if i_idx <= 5 else ('CONTAINMENT' if i_idx <= 12 else ('RECOVERY' if i_idx <= 18 else 'CLOSED'))
+        created = (datetime.utcnow() - timedelta(days=random.randint(2, 60))).isoformat()
+        incidents.append({
+            "incident_id": i_idx,
+            "title": f"{title_p} #{i_idx:02d}",
+            "description": "Active incident response triggered by high-severity correlated alerts.",
+            "category": cat,
+            "severity": sev,
+            "status": status,
+            "lead_analyst_id": 1,
+            "asset_id": asset_ref,
+            "created_at": created,
+            "tasks": [
+                {"task_id": 1, "title": "Isolate affected network segment", "is_completed": status == 'CLOSED'},
+                {"task_id": 2, "title": "Collect forensic memory snapshot", "is_completed": status == 'CLOSED'},
+                {"task_id": 3, "title": "Analyze command-and-control IOCs", "is_completed": status == 'CLOSED'},
+                {"task_id": 4, "title": "Deploy mitigating firewall rule", "is_completed": status == 'CLOSED'}
+            ],
+            "notes": [
+                {"note_id": 1, "author": "Aarav Sharma", "note_text": "Initial triage confirmed malicious beaconing behavior.", "created_at": created}
+            ]
+        })
+    _insert("incidents", incidents)
+
+    # 6. Audit Plans & Controls
+    plans = [
+        {
+            "plan_id": 1,
+            "framework_name": "ISO/IEC 27001:2022",
+            "title": "FY2026 Annual ISO 27001 Surveillance Audit",
+            "status": "IN_PROGRESS",
+            "assessments": [
+                {"control_id": 7, "control_code": "A.8.8", "control_title": "Management of technical vulnerabilities", "status": "FAIL", "notes": "Critical vulnerability SLA breaches observed on production finance gateways.", "assessor_name": "Rohan Deshmukh", "finding_title": "Control A.8.8 Non-Compliance: Overdue Critical Vulnerability", "finding_severity": "CRITICAL"},
+                {"control_id": 2, "control_code": "A.5.15", "control_title": "Access control management", "status": "PASS", "notes": "RBAC policies enforced and zero orphaned privileged accounts found.", "assessor_name": "Rohan Deshmukh"},
+                {"control_id": 8, "control_code": "A.8.9", "control_title": "Configuration management", "status": "PARTIAL", "notes": "Configuration drifts identified on 12 staging worker nodes.", "assessor_name": "Rohan Deshmukh"}
+            ]
+        },
+        {
+            "plan_id": 2,
+            "framework_name": "NIST CSF 2.0",
+            "title": "Q1 NIST CSF 2.0 Maturity Assessment",
+            "status": "IN_PROGRESS",
+            "assessments": [
+                {"control_id": 16, "control_code": "ID.AM-02", "control_title": "Inventories of software managed", "status": "FAIL", "notes": "Uninventoried software packages discovered on developer laptop sample.", "assessor_name": "Rohan Deshmukh", "finding_title": "Control ID.AM-02 Non-Compliance: Software Drift", "finding_severity": "MEDIUM"}
+            ]
+        }
+    ]
+    _insert("audit_plans", plans)
+
+    # 7. Risks (50+)
+    risks = []
+    risk_scenarios = [
+        ("Unpatched Remote Code Execution in Payment Gateway", "Exploitation of zero-day or known CVE on critical transactional infrastructure.", 4, 1, 4, 5),
+        ("Ransomware Outbreak via Compromised Developer Endpoint", "Phishing or malware download encrypting internal code repositories.", 3, 2, 3, 5),
+        ("Cloud Storage Bucket Data Exfiltration", "Misconfigured public read permissions on sensitive audit and customer artifact buckets.", 2, 3, 2, 5),
+        ("DDoS Disruption of Customer Facing Banking API", "Volumetric layer 7 attack exceeding rate limiting capacity.", 1, 1, 4, 4),
+        ("Insider Threat Unauthorized Privilege Escalation", "Disgruntled employee harvesting administrative domain credentials.", 5, 2, 2, 4)
+    ]
+    for r_idx, (rtitle, rdesc, rdept, rasset, l, imp) in enumerate(risk_scenarios, 1):
+        risks.append({
+            "risk_id": r_idx,
+            "title": rtitle,
+            "threat_description": rdesc,
+            "likelihood": l,
+            "impact": imp,
+            "inherent_score": l * imp,
+            "residual_score": l * imp,
+            "status": "ASSESSED",
+            "strategy": "MITIGATE",
+            "treatment_status": "APPROVED",
+            "created_at": datetime.utcnow().isoformat()
+        })
+    for r_extra in range(6, 52):
+        l = random.randint(1, 5)
+        imp = random.randint(1, 5)
+        risks.append({
+            "risk_id": r_extra,
+            "title": f"Operational Security Risk #{r_extra:02d}",
+            "threat_description": "Risk scenario evaluated under annual risk management register review.",
+            "likelihood": l,
+            "impact": imp,
+            "inherent_score": l * imp,
+            "residual_score": l * imp,
+            "status": "ASSESSED",
+            "created_at": datetime.utcnow().isoformat()
+        })
+    _insert("risks", risks)
+
+    # 8. Audit logs
+    audit_logs = [
+        {"audit_id": 1, "user_id": 5, "action": "SYSTEM_INITIALIZED", "entity_type": "CORE", "entity_id": "NEXORA", "created_at": datetime.utcnow().isoformat(), "ip_address": "127.0.0.1"},
+        {"audit_id": 2, "user_id": 4, "action": "POLICY_PUBLISHED", "entity_type": "COMPLIANCE", "entity_id": "ISO-27001", "created_at": datetime.utcnow().isoformat(), "ip_address": "10.20.0.50"},
+        {"audit_id": 3, "user_id": 2, "action": "PATCH_DEPLOYED", "entity_type": "ASSET", "entity_id": "5", "created_at": datetime.utcnow().isoformat(), "ip_address": "10.20.1.15"}
+    ]
+    _insert("audit_logs", audit_logs)
 
 if __name__ == "__main__":
     run_seed()
+

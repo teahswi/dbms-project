@@ -12,22 +12,45 @@ from app.services.risk_engine import calculate_priority_score, SLA_DAYS
 logger = logging.getLogger(__name__)
 
 class MongoRepository(BaseRepository):
-    def __init__(self, uri="mongodb://localhost:27017/cybershield", database="cybershield", fallback=True):
+    def __init__(self, uri="mongodb://localhost:27017/cybershield", database="cybershield", fallback=False):
         self.fallback = fallback
         self.is_fallback = False
+        self.fallback_reason = None
+        self.configured_backend = "mongo"
         try:
             import pymongo
             self.client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=2000)
             self.client.admin.command('ping')
             self.db = self.client[database]
+            self.active_engine = "MongoDB"
+            self.backend_name = "MongoDB 7.0 (Connected)"
             logger.info("Connected successfully to MongoDB database: %s", database)
         except Exception as e:
             if fallback:
                 logger.warning("MongoDB connection failed (%s). Falling back to internal document repository.", str(e))
                 self.is_fallback = True
+                self.fallback_reason = str(e)
+                self.active_engine = "Memory"
+                self.backend_name = "MongoDB Mock (Fallback: Mongo Offline)"
                 self._init_memory_store()
             else:
-                raise e
+                logger.error("MongoDB connection failed to %s: %s", uri, str(e))
+                raise ConnectionError(
+                    f"Failed to connect to MongoDB database at {uri}. "
+                    f"Ensure MongoDB daemon is active, or set DB_BACKEND=sqlite "
+                    f"or ENABLE_DEV_FALLBACK=true in .env. Root cause: {str(e)}"
+                ) from e
+
+    def get_backend_info(self) -> Dict[str, Any]:
+        return {
+            "configured_backend": self.configured_backend,
+            "active_engine": self.active_engine,
+            "display_name": self.backend_name,
+            "is_fallback": self.is_fallback,
+            "fallback_reason": self.fallback_reason,
+            "status": "FALLBACK" if self.is_fallback else "CONNECTED"
+        }
+
 
     def _init_memory_store(self):
         """Initializes high-performance in-memory document collections."""
@@ -155,16 +178,23 @@ class MongoRepository(BaseRepository):
         return docs
 
     def get_rbac_matrix(self) -> Dict[str, Any]:
+        matrix = {
+            "Security Analyst": ["ASSET_VIEW", "VULN_VIEW", "ALERT_TRIAGE", "INCIDENT_MANAGE"],
+            "IT Infrastructure Engineer": ["ASSET_VIEW", "ASSET_EDIT", "VULN_VIEW", "VULN_REMEDIATE"],
+            "Compliance Auditor": ["ASSET_VIEW", "VULN_VIEW", "AUDIT_ASSESS"],
+            "Security Manager": ["ASSET_VIEW", "VULN_VIEW", "ALERT_TRIAGE", "INCIDENT_MANAGE", "AUDIT_ASSESS", "RISK_APPROVE"],
+            "Admin": ["ASSET_VIEW", "ASSET_EDIT", "VULN_VIEW", "VULN_REMEDIATE", "VULN_VERIFY", "ALERT_TRIAGE", "INCIDENT_MANAGE", "AUDIT_ASSESS", "RISK_APPROVE", "ADMIN_ACCESS"]
+        }
         if self.is_fallback:
-            matrix = {
-                "Security Analyst": ["ASSET_VIEW", "INCIDENT_RESPOND"],
-                "IT Infrastructure Engineer": ["ASSET_VIEW", "ASSET_EDIT"],
-                "Compliance Auditor": ["ASSET_VIEW", "AUDIT_ASSESS"],
-                "Security Manager": ["ASSET_VIEW", "RISK_APPROVE", "AUDIT_ASSESS"],
-                "Admin": ["ASSET_VIEW", "ASSET_EDIT", "VULN_VERIFY", "INCIDENT_RESPOND", "AUDIT_ASSESS", "RISK_APPROVE", "ADMIN_FULL"]
-            }
             return {"roles": self.store["roles"], "permissions": self.store["permissions"], "matrix": matrix}
-        return {"roles": [], "permissions": [], "matrix": {}}
+        roles = list(self.db.roles.find())
+        permissions = list(self.db.permissions.find())
+        return {
+            "roles": roles if roles else self.store.get("roles", []),
+            "permissions": permissions if permissions else self.store.get("permissions", []),
+            "matrix": matrix
+        }
+
 
     # -------------------------------------------------------------------------
     # Application Audit Logs (Append-Only)
@@ -517,26 +547,30 @@ class MongoRepository(BaseRepository):
                     ass["status"] = status
                     ass["notes"] = notes
                     ass["assessed_at"] = datetime.utcnow().isoformat()
+                    if not self.is_fallback:
+                        self.db.audit_plans.update_one(
+                            {"$or": [{"_id": plan_id}, {"plan_id": plan_id}], "assessments.control_id": control_id},
+                            {"$set": {"assessments.$.status": status, "assessments.$.notes": notes, "assessments.$.assessed_at": ass["assessed_at"]}}
+                        )
                     return ass
         return {}
 
     def get_traceability_matrix(self) -> List[Dict[str, Any]]:
-        if self.is_fallback:
-            matrix = []
-            for p in self.store["audit_plans"]:
-                for ass in p.get("assessments", []):
-                    matrix.append({
-                        "framework_name": p.get("framework_name", "ISO 27001"),
-                        "control_code": ass.get("control_code", "A.9.1"),
-                        "control_title": ass.get("control_title", "Access Control Policy"),
-                        "domain": ass.get("domain", "Access Control"),
-                        "assessment_status": ass.get("status", "PASS"),
-                        "assessed_by": ass.get("assessor_name", "Auditor"),
-                        "audit_finding_title": ass.get("finding_title"),
-                        "finding_severity": ass.get("finding_severity")
-                    })
-            return matrix
-        return []
+        plans = self.store["audit_plans"] if self.is_fallback else list(self.db.audit_plans.find())
+        matrix = []
+        for p in plans:
+            for ass in p.get("assessments", []):
+                matrix.append({
+                    "framework_name": p.get("framework_name", "ISO 27001"),
+                    "control_code": ass.get("control_code", "A.9.1"),
+                    "control_title": ass.get("control_title", "Access Control Policy"),
+                    "domain": ass.get("domain", "Access Control"),
+                    "assessment_status": ass.get("status", "PASS"),
+                    "assessed_by": ass.get("assessor_name", "Auditor"),
+                    "audit_finding_title": ass.get("finding_title"),
+                    "finding_severity": ass.get("finding_severity")
+                })
+        return matrix
 
     # -------------------------------------------------------------------------
     # Risks
@@ -547,55 +581,92 @@ class MongoRepository(BaseRepository):
             if status:
                 res = [r for r in res if r.get("status") == status]
             return sorted(res, key=lambda x: -x.get("residual_score", 0))
-        return list(self.db.risks.find())
+        query = {"status": status} if status else {}
+        docs = list(self.db.risks.find(query).sort("residual_score", -1))
+        for d in docs:
+            d["risk_id"] = str(d.get("risk_id", d.get("_id")))
+        return docs
 
     def get_risk_by_id(self, risk_id: Any) -> Optional[Dict[str, Any]]:
         if self.is_fallback:
             return next((r for r in self.store["risks"] if str(r.get("risk_id")) == str(risk_id)), None)
-        return self.db.risks.find_one({"_id": risk_id})
+        from bson import ObjectId
+        doc = None
+        try:
+            doc = self.db.risks.find_one({"$or": [{"_id": ObjectId(risk_id)}, {"risk_id": int(risk_id) if str(risk_id).isdigit() else risk_id}]})
+        except Exception:
+            doc = self.db.risks.find_one({"risk_id": int(risk_id) if str(risk_id).isdigit() else risk_id})
+        if doc:
+            doc["risk_id"] = str(doc.get("risk_id", doc.get("_id")))
+        return doc
 
     def create_risk(self, risk_data: Dict[str, Any]) -> Dict[str, Any]:
         entry = dict(risk_data)
+        l = int(risk_data.get("likelihood", 3))
+        i = int(risk_data.get("impact", 3))
+        entry["likelihood"] = l
+        entry["impact"] = i
+        entry["inherent_score"] = l * i
+        entry["residual_score"] = int(risk_data.get("residual_score", l * i))
+        entry["status"] = "ASSESSED"
+        entry["created_at"] = datetime.utcnow().isoformat()
         if self.is_fallback:
             entry["risk_id"] = len(self.store["risks"]) + 1
-            l = int(risk_data.get("likelihood", 3))
-            i = int(risk_data.get("impact", 3))
-            entry["likelihood"] = l
-            entry["impact"] = i
-            entry["inherent_score"] = l * i
-            entry["residual_score"] = int(risk_data.get("residual_score", l * i))
-            entry["status"] = "ASSESSED"
-            entry["created_at"] = datetime.utcnow().isoformat()
             self.store["risks"].append(entry)
             return entry
         res = self.db.risks.insert_one(entry)
-        return self.get_risk_by_id(res.inserted_id)
+        entry["risk_id"] = str(res.inserted_id)
+        return entry
 
     def record_risk_treatment(self, risk_id: Any, strategy: str, justification: str, owner_id: Any, target_date: str) -> Dict[str, Any]:
         risk = self.get_risk_by_id(risk_id)
         if risk:
-            risk["strategy"] = strategy
-            risk["justification"] = justification
-            risk["target_date"] = target_date
-            risk["treatment_status"] = "PROPOSED"
-            risk["status"] = "TREATED"
+            updates = {
+                "strategy": strategy,
+                "justification": justification,
+                "target_date": target_date,
+                "treatment_status": "PROPOSED",
+                "status": "TREATED"
+            }
+            risk.update(updates)
+            if not self.is_fallback:
+                from bson import ObjectId
+                try:
+                    self.db.risks.update_one(
+                        {"$or": [{"_id": ObjectId(risk_id)}, {"risk_id": int(risk_id) if str(risk_id).isdigit() else risk_id}]},
+                        {"$set": updates}
+                    )
+                except Exception:
+                    self.db.risks.update_one({"risk_id": int(risk_id) if str(risk_id).isdigit() else risk_id}, {"$set": updates})
         return risk
 
     def approve_risk_treatment(self, treatment_id: Any, approver_id: Any, expiry_date: str) -> Dict[str, Any]:
-        for r in self.store["risks"] if self.is_fallback else []:
-            if str(r.get("treatment_id")) == str(treatment_id):
-                r["treatment_status"] = "APPROVED"
-                r["expiry_date"] = expiry_date
-                if r.get("strategy") == "ACCEPT":
-                    r["status"] = "ACCEPTED"
-                return r
-        return {}
+        if self.is_fallback:
+            for r in self.store["risks"]:
+                if str(r.get("treatment_id")) == str(treatment_id) or str(r.get("risk_id")) == str(treatment_id):
+                    r["treatment_status"] = "APPROVED"
+                    r["expiry_date"] = expiry_date
+                    if r.get("strategy") == "ACCEPT":
+                        r["status"] = "ACCEPTED"
+                    return r
+            return {}
+        query = {"$or": [
+            {"treatment_id": int(treatment_id) if str(treatment_id).isdigit() else treatment_id},
+            {"risk_id": int(treatment_id) if str(treatment_id).isdigit() else treatment_id}
+        ]}
+        update = {"$set": {"treatment_status": "APPROVED", "expiry_date": expiry_date}}
+        res = self.db.risks.find_one_and_update(query, update, return_document=True)
+        if res and res.get("strategy") == "ACCEPT":
+            self.db.risks.update_one(query, {"$set": {"status": "ACCEPTED"}})
+            res["status"] = "ACCEPTED"
+        return res if res else {}
 
     def get_risk_heatmap(self) -> List[Dict[str, Any]]:
+        risks = self.store["risks"] if self.is_fallback else list(self.db.risks.find({"status": {"$ne": "CLOSED"}}))
         matrix = []
         for l in range(1, 6):
             for imp in range(1, 6):
-                count = sum(1 for r in (self.store["risks"] if self.is_fallback else []) if r.get("likelihood") == l and r.get("impact") == imp)
+                count = sum(1 for r in risks if r.get("likelihood") == l and r.get("impact") == imp)
                 matrix.append({"likelihood": l, "impact": imp, "score": l * imp, "count": count})
         return matrix
 
@@ -603,29 +674,107 @@ class MongoRepository(BaseRepository):
     # Executive Posture
     # -------------------------------------------------------------------------
     def get_executive_posture(self) -> Dict[str, Any]:
-        if self.is_fallback:
-            return {
-                "posture_score": 86.4,
-                "asset_count": len(self.store["assets"]),
-                "open_vulnerabilities": len([v for v in self.store["vulnerabilities"] if v.get("status") in ('OPEN', 'IN_PROGRESS')]),
-                "critical_vulnerabilities": len([v for v in self.store["vulnerabilities"] if v.get("severity") == "CRITICAL"]),
-                "active_alerts": len([a for a in self.store["alerts"] if a.get("status") != 'CLOSED_TP']),
-                "open_incidents": len([i for i in self.store["incidents"] if i.get("status") != 'CLOSED']),
-                "failed_controls": 3,
-                "high_risks": len([r for r in self.store["risks"] if r.get("residual_score", 0) >= 15]),
-                "mean_time_to_detect_minutes": 14.5,
-                "mean_time_to_remediate_hours": 3.8,
-                "department_exposure": [
-                    {"department": "Engineering & DevOps", "asset_count": 240, "exposure_score": 420.5},
-                    {"department": "Finance & Payroll", "asset_count": 80, "exposure_score": 380.0},
-                    {"department": "Core Banking Ops", "asset_count": 160, "exposure_score": 290.2},
-                    {"department": "Corporate IT", "asset_count": 280, "exposure_score": 150.0}
-                ],
-                "aging_funnel": [
-                    {"range": "0-7 Days", "count": 24, "status": "On Track"},
-                    {"range": "8-30 Days", "count": 41, "status": "Caution"},
-                    {"range": "31-60 Days", "count": 18, "status": "Warning"},
-                    {"range": "60+ Days", "count": 7, "status": "SLA Breached"}
-                ]
-            }
-        return {"posture_score": 85.0}
+        assets = self.store["assets"] if self.is_fallback else list(self.db.assets.find())
+        vulns = self.store["vulnerabilities"] if self.is_fallback else list(self.db.vulnerabilities.find())
+        alerts = self.store["alerts"] if self.is_fallback else list(self.db.alerts.find())
+        incidents = self.store["incidents"] if self.is_fallback else list(self.db.incidents.find())
+        audit_plans = self.store["audit_plans"] if self.is_fallback else list(self.db.audit_plans.find())
+        risks = self.store["risks"] if self.is_fallback else list(self.db.risks.find())
+
+        open_vulns = [v for v in vulns if v.get("status") in ('OPEN', 'IN_PROGRESS')]
+        crit_vulns = len([v for v in open_vulns if v.get("severity") == "CRITICAL"])
+        high_vulns = len([v for v in open_vulns if v.get("severity") == "HIGH"])
+        med_vulns = len([v for v in open_vulns if v.get("severity") == "MEDIUM"])
+        low_vulns = len([v for v in open_vulns if v.get("severity") == "LOW"])
+        active_alerts = len([a for a in alerts if a.get("status") in ('NEW', 'TRIAGED', 'INVESTIGATING', 'ESCALATED')])
+        open_incidents = len([i for i in incidents if i.get("status") != 'CLOSED'])
+
+        # Failed controls from assessments
+        failed_controls = 0
+        for p in audit_plans:
+            for ass in p.get("assessments", []):
+                if ass.get("status") == "FAIL":
+                    failed_controls += 1
+
+        high_risks = len([r for r in risks if r.get("residual_score", 0) >= 15])
+
+        # Formula matches MySQL exactly
+        deductions = (crit_vulns * 4.0) + (open_incidents * 5.0) + (failed_controls * 3.0) + (high_risks * 2.0)
+        posture_score = max(10.0, min(98.0, round(100.0 - deductions, 1)))
+
+        # Dynamic department exposure
+        dept_map = {}
+        for a in assets:
+            dept = a.get("department", "Corporate IT")
+            if dept not in dept_map:
+                dept_map[dept] = {"department": dept, "asset_count": 0, "exposure_score": 0.0}
+            dept_map[dept]["asset_count"] += 1
+
+        for v in open_vulns:
+            aid = v.get("asset_id")
+            asset = next((a for a in assets if str(a.get("asset_id", a.get("_id"))) == str(aid)), None)
+            dept = asset.get("department", "Corporate IT") if asset else "Corporate IT"
+            if dept not in dept_map:
+                dept_map[dept] = {"department": dept, "asset_count": 1, "exposure_score": 0.0}
+            dept_map[dept]["exposure_score"] += float(v.get("priority_score", 0.0))
+
+        dept_exposure = sorted(list(dept_map.values()), key=lambda x: -x["exposure_score"])
+
+        # Dynamic aging funnel based on discovery date
+        now = datetime.utcnow()
+        funnel_0_7 = 0
+        funnel_8_30 = 0
+        funnel_31_60 = 0
+        funnel_60_plus = 0
+
+        for v in open_vulns:
+            disc = v.get("discovered_at") or v.get("created_at")
+            if disc:
+                if isinstance(disc, str):
+                    try:
+                        disc_dt = datetime.fromisoformat(disc.replace("Z", ""))
+                    except Exception:
+                        disc_dt = now
+                elif isinstance(disc, datetime):
+                    disc_dt = disc
+                else:
+                    disc_dt = now
+                days = (now - disc_dt).days
+            else:
+                days = 0
+
+            if days <= 7:
+                funnel_0_7 += 1
+            elif days <= 30:
+                funnel_8_30 += 1
+            elif days <= 60:
+                funnel_31_60 += 1
+            else:
+                funnel_60_plus += 1
+
+        aging = [
+            {"range": "0-7 Days", "count": funnel_0_7, "status": "On Track"},
+            {"range": "8-30 Days", "count": funnel_8_30, "status": "Caution"},
+            {"range": "31-60 Days", "count": funnel_31_60, "status": "Warning"},
+            {"range": "60+ Days", "count": funnel_60_plus, "status": "SLA Breached" if funnel_60_plus > 0 else "Normal"}
+        ]
+
+        return {
+            "posture_score": posture_score,
+            "asset_count": len(assets),
+            "open_vulnerabilities": len(open_vulns),
+            "critical_vulnerabilities": crit_vulns,
+            "high_vulnerabilities": high_vulns,
+            "medium_vulnerabilities": med_vulns,
+            "low_vulnerabilities": low_vulns,
+            "active_alerts": active_alerts,
+            "open_incidents": open_incidents,
+            "failed_controls": failed_controls,
+            "high_risks": high_risks,
+            "mean_time_to_detect_minutes": 14.5,
+            "mean_time_to_remediate_hours": 3.8,
+            "department_exposure": dept_exposure,
+            "aging_funnel": aging,
+            "backend_info": self.get_backend_info()
+        }
+

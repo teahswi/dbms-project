@@ -15,23 +15,60 @@ from app.services.risk_engine import calculate_priority_score, SLA_DAYS
 logger = logging.getLogger(__name__)
 
 class MySQLRepository(BaseRepository):
-    def __init__(self, host="localhost", port=3306, user="root", password="rootpassword", database="cybershield", fallback=True):
+    def __init__(self, host="localhost", port=3306, user="root", password="", database="cybershield", fallback=False, use_sqlite=False, sqlite_path="cybershield_local.db"):
         self.fallback = fallback
-        self.is_sqlite = False
+        self.is_sqlite = use_sqlite
+        self.is_fallback = False
+        self.fallback_reason = None
+        self.sqlite_path = sqlite_path
+
+        if use_sqlite:
+            self.configured_backend = "sqlite"
+            self.active_engine = "SQLite"
+            self.backend_name = "SQLite (Local Standalone Demo)"
+            self.engine = create_engine(f"sqlite:///{sqlite_path}", echo=False)
+            self._init_sqlite_schema()
+            logger.info("Initialized standalone SQLite relational database at: %s", sqlite_path)
+            return
+
+        self.configured_backend = "mysql"
         db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}?charset=utf8mb4"
         try:
             self.engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=3600)
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
+            self.active_engine = "MySQL"
+            self.backend_name = "MySQL 8.0 (Connected)"
             logger.info("Connected successfully to MySQL database: %s", database)
         except Exception as e:
             if fallback:
-                logger.warning("MySQL connection failed (%s). Falling back to SQLite local engine for zero-dependency development.", str(e))
+                logger.warning("MySQL connection failed (%s). Falling back to SQLite local engine.", str(e))
                 self.is_sqlite = True
-                self.engine = create_engine("sqlite:///cybershield_local.db", echo=False)
+                self.is_fallback = True
+                self.fallback_reason = str(e)
+                self.active_engine = "SQLite"
+                self.backend_name = "SQLite (Fallback: MySQL Offline)"
+                self.engine = create_engine(f"sqlite:///{sqlite_path}", echo=False)
                 self._init_sqlite_schema()
             else:
-                raise e
+                logger.error("MySQL connection failed to %s:%s/%s: %s", host, port, database, str(e))
+                raise ConnectionError(
+                    f"Failed to connect to MySQL database at {host}:{port}/{database}. "
+                    f"Ensure MySQL daemon is active and credentials are correct, or set DB_BACKEND=sqlite "
+                    f"or ENABLE_DEV_FALLBACK=true in .env. Root cause: {str(e)}"
+                ) from e
+
+    def get_backend_info(self) -> Dict[str, Any]:
+        return {
+            "configured_backend": self.configured_backend,
+            "active_engine": self.active_engine,
+            "display_name": self.backend_name,
+            "is_fallback": self.is_fallback,
+            "fallback_reason": self.fallback_reason,
+            "is_sqlite": self.is_sqlite,
+            "status": "FALLBACK" if self.is_fallback else "CONNECTED"
+        }
+
 
     def _init_sqlite_schema(self):
         """Creates the identical 3NF relational schema in SQLite when running in fallback mode."""
@@ -496,7 +533,7 @@ class MySQLRepository(BaseRepository):
         with self.engine.begin() as conn:
             set_clauses = []
             params = {"uid": int(user_id)}
-            for k in ["full_name", "title", "is_active", "failed_login_attempts"]:
+            for k in ["full_name", "title", "is_active", "failed_login_attempts", "lockout_until", "password_hash"]:
                 if k in updates:
                     set_clauses.append(f"{k} = :{k}")
                     params[k] = updates[k]
@@ -504,6 +541,7 @@ class MySQLRepository(BaseRepository):
                 sql = f"UPDATE users SET {', '.join(set_clauses)} WHERE user_id = :uid"
                 conn.execute(text(sql), params)
         return self.get_user_by_id(user_id)
+
 
     def record_login(self, user_id: Optional[Any], email: str, ip_address: str, user_agent: str, status: str, failure_reason: Optional[str] = None) -> None:
         with self.engine.begin() as conn:
@@ -1391,19 +1429,22 @@ class MySQLRepository(BaseRepository):
             asset_count = conn.execute(text("SELECT COUNT(*) FROM assets WHERE lifecycle_status = 'ACTIVE'")).scalar() or 0
             open_vulns = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS')")).scalar() or 0
             crit_vulns = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND severity = 'CRITICAL'")).scalar() or 0
+            high_vulns = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND severity = 'HIGH'")).scalar() or 0
+            med_vulns = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND severity = 'MEDIUM'")).scalar() or 0
+            low_vulns = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND severity = 'LOW'")).scalar() or 0
             active_alerts = conn.execute(text("SELECT COUNT(*) FROM security_alerts WHERE status IN ('NEW', 'TRIAGED', 'INVESTIGATING', 'ESCALATED')")).scalar() or 0
             open_incidents = conn.execute(text("SELECT COUNT(*) FROM incidents WHERE status != 'CLOSED'")).scalar() or 0
             failed_controls = conn.execute(text("SELECT COUNT(*) FROM audit_assessments WHERE status = 'FAIL'")).scalar() or 0
             high_risks = conn.execute(text("SELECT COUNT(*) FROM risk_assessments WHERE residual_score >= 15")).scalar() or 0
 
             # Calculate posture score 0 - 100
-            # Base 100 with deductions for open criticals, active incidents, failed controls
+            # Base 100 with deductions for open criticals, active incidents, failed controls, high risks
             deductions = (crit_vulns * 4.0) + (open_incidents * 5.0) + (failed_controls * 3.0) + (high_risks * 2.0)
             posture_score = max(10.0, min(98.0, round(100.0 - deductions, 1)))
 
             # Exposure by department
             dept_exposure = conn.execute(text("""
-                SELECT d.name AS department, COUNT(a.asset_id) AS asset_count,
+                SELECT d.name AS department, COUNT(DISTINCT a.asset_id) AS asset_count,
                        COALESCE(SUM(CASE WHEN av.status IN ('OPEN', 'IN_PROGRESS') THEN av.priority_score ELSE 0 END), 0) AS exposure_score
                 FROM departments d
                 LEFT JOIN assets a ON d.department_id = a.department_id
@@ -1412,12 +1453,23 @@ class MySQLRepository(BaseRepository):
                 ORDER BY exposure_score DESC
             """)).all()
 
-            # Vulnerability aging funnel
+            # Dynamic vulnerability aging funnel from real database records
+            if self.is_sqlite:
+                funnel_0_7 = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND (julianday('now') - julianday(discovered_at)) <= 7")).scalar() or 0
+                funnel_8_30 = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND (julianday('now') - julianday(discovered_at)) > 7 AND (julianday('now') - julianday(discovered_at)) <= 30")).scalar() or 0
+                funnel_31_60 = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND (julianday('now') - julianday(discovered_at)) > 30 AND (julianday('now') - julianday(discovered_at)) <= 60")).scalar() or 0
+                funnel_60_plus = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND (julianday('now') - julianday(discovered_at)) > 60")).scalar() or 0
+            else:
+                funnel_0_7 = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND DATEDIFF(NOW(), discovered_at) <= 7")).scalar() or 0
+                funnel_8_30 = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND DATEDIFF(NOW(), discovered_at) > 7 AND DATEDIFF(NOW(), discovered_at) <= 30")).scalar() or 0
+                funnel_31_60 = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND DATEDIFF(NOW(), discovered_at) > 30 AND DATEDIFF(NOW(), discovered_at) <= 60")).scalar() or 0
+                funnel_60_plus = conn.execute(text("SELECT COUNT(*) FROM asset_vulnerabilities WHERE status IN ('OPEN', 'IN_PROGRESS') AND DATEDIFF(NOW(), discovered_at) > 60")).scalar() or 0
+
             aging = [
-                {"range": "0-7 Days", "count": 24, "status": "On Track"},
-                {"range": "8-30 Days", "count": 41, "status": "Caution"},
-                {"range": "31-60 Days", "count": 18, "status": "Warning"},
-                {"range": "60+ Days", "count": 7, "status": "SLA Breached"}
+                {"range": "0-7 Days", "count": funnel_0_7, "status": "On Track"},
+                {"range": "8-30 Days", "count": funnel_8_30, "status": "Caution"},
+                {"range": "31-60 Days", "count": funnel_31_60, "status": "Warning"},
+                {"range": "60+ Days", "count": funnel_60_plus, "status": "SLA Breached" if funnel_60_plus > 0 else "Normal"}
             ]
 
             return {
@@ -1425,6 +1477,9 @@ class MySQLRepository(BaseRepository):
                 "asset_count": asset_count,
                 "open_vulnerabilities": open_vulns,
                 "critical_vulnerabilities": crit_vulns,
+                "high_vulnerabilities": high_vulns,
+                "medium_vulnerabilities": med_vulns,
+                "low_vulnerabilities": low_vulns,
                 "active_alerts": active_alerts,
                 "open_incidents": open_incidents,
                 "failed_controls": failed_controls,
@@ -1432,5 +1487,7 @@ class MySQLRepository(BaseRepository):
                 "mean_time_to_detect_minutes": 14.5,
                 "mean_time_to_remediate_hours": 3.8,
                 "department_exposure": [self._row_to_dict(r) for r in dept_exposure],
-                "aging_funnel": aging
+                "aging_funnel": aging,
+                "backend_info": self.get_backend_info()
             }
+

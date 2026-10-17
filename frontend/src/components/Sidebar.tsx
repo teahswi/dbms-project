@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
+import { api } from '../services/api';
+import type { SystemHealth } from '../types';
 import {
   Shield,
   LayoutDashboard,
@@ -13,7 +15,8 @@ import {
   FileClock,
   FileText,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Database
 } from 'lucide-react';
 
 interface Props {
@@ -29,9 +32,18 @@ export const Sidebar: React.FC<Props> = ({
   openAlertsCount = 42,
   openIncidentsCount = 5
 }) => {
+  const [health, setHealth] = useState<SystemHealth | null>(null);
+
+  useEffect(() => {
+    api.getHealth()
+      .then((res) => setHealth(res))
+      .catch((err) => console.debug('Health check offline:', err));
+  }, []);
+
   const navSections = [
     {
       group: 'MONITOR',
+
       items: [
         { name: 'Security Posture', path: '/', icon: LayoutDashboard },
         { name: 'Alerts & Events', path: '/alerts', icon: BellRing, badge: openAlertsCount, badgeColor: 'bg-red-500/20 text-red-400 border border-red-500/40' }
@@ -141,16 +153,29 @@ export const Sidebar: React.FC<Props> = ({
 
       {/* Footer System Status */}
       <div className="p-3 border-t border-slate-800/80 bg-slate-950/80">
-        <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-400">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+        <div className={`flex items-center gap-2.5 px-2 py-1.5 rounded-lg border text-[11px] font-mono ${
+          health?.is_fallback
+            ? 'bg-amber-950/40 border-amber-800/60 text-amber-300'
+            : 'bg-slate-900/60 border-slate-800 text-slate-400'
+        }`}>
+          <span className={`w-2 h-2 rounded-full shrink-0 ${
+            health?.is_fallback
+              ? 'bg-amber-400 animate-pulse'
+              : 'bg-emerald-400 animate-ping'
+          }`} />
           {!collapsed && (
             <div className="flex flex-col truncate">
-              <span className="text-slate-300 font-medium">DBMS Core: Active</span>
-              <span className="text-[10px] text-slate-500">Dual MySQL / Mongo</span>
+              <span className="text-slate-200 font-medium truncate">
+                {health?.database?.display_name || health?.display_name || 'DBMS Engine: Active'}
+              </span>
+              <span className={`text-[10px] ${health?.is_fallback ? 'text-amber-400 font-bold' : 'text-slate-500'}`}>
+                {health?.is_fallback ? 'DEV FALLBACK ACTIVE' : 'Verified DBMS Connection'}
+              </span>
             </div>
           )}
         </div>
       </div>
+
     </aside>
   );
 };

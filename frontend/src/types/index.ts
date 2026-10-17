@@ -180,11 +180,23 @@ export interface AuditLogEntry {
   created_at: string;
 }
 
+export interface BackendInfo {
+  configured_backend: string;
+  active_engine: string;
+  display_name: string;
+  is_fallback: boolean;
+  fallback_reason?: string;
+  status: string;
+}
+
 export interface PostureMetrics {
   posture_score: number;
   asset_count: number;
   open_vulnerabilities: number;
   critical_vulnerabilities: number;
+  high_vulnerabilities?: number;
+  medium_vulnerabilities?: number;
+  low_vulnerabilities?: number;
   active_alerts: number;
   open_incidents: number;
   failed_controls: number;
@@ -201,4 +213,20 @@ export interface PostureMetrics {
     count: number;
     status: string;
   }>;
+  backend_info?: BackendInfo;
 }
+
+export interface SystemHealth {
+  status: string;
+  service: string;
+  version: string;
+  organization: string;
+  database: BackendInfo;
+  database_backend: string;
+  active_engine: string;
+  display_name: string;
+  is_fallback: boolean;
+  is_sqlite_fallback: boolean;
+  is_mongo_fallback: boolean;
+}
+
