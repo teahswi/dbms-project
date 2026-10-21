@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6.svg)](https://www.typescriptlang.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+-4479A1.svg)](https://www.mysql.com/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7.0+-47A248.svg)](https://www.mongodb.com/)
-[![Tests](https://img.shields.io/badge/Pytest-26%20Passed%20(100%25)-success.svg)](https://pytest.org/)
+[![Tests](https://img.shields.io/badge/Pytest-29%20Passed%20(100%25)-success.svg)](https://pytest.org/)
 
 **CyberShield** is an enterprise-grade Security Operations Center (SOC), Vulnerability Management, and Governance, Risk & Compliance (GRC) management platform architected for **Nexora Technologies**. 
 
@@ -207,7 +207,7 @@ cd dbms-project
 ```bash
 cp .env.example .env
 ```
-*(The default `.env` is pre-configured with `DB_BACKEND=sqlite` for zero-dependency standalone execution).*
+*(The template defaults to `DB_BACKEND=sqlite` for zero-dependency standalone execution. Keep `FLASK_DEBUG=0`; use randomly generated values for both secret keys.)*
 
 #### 3. Setup Python Backend
 ```bash
@@ -237,11 +237,11 @@ cd frontend
 # Install Node dependencies
 npm install
 
-# Start Vite dev server (runs on http://localhost:5173)
+# Start Vite dev server (runs on http://localhost:3000)
 npm run dev
 ```
 
-Visit **http://localhost:5173** and log in using any of the quick-switcher persona buttons!
+Visit **http://localhost:3000** and log in using any of the quick-switcher persona buttons!
 
 ---
 
@@ -250,6 +250,7 @@ Visit **http://localhost:5173** and log in using any of the quick-switcher perso
 To launch the full enterprise architecture with real MySQL 8.0 and MongoDB 7.0 daemons:
 
 ```bash
+# Create a .env file and set MYSQL_PASSWORD, SECRET_KEY, and JWT_SECRET_KEY first.
 # Start all containers (MySQL, MongoDB, Backend API, Frontend)
 docker compose up -d
 
@@ -269,6 +270,16 @@ CyberShield includes a comprehensive **Pytest** test suite verifying cross-backe
 ```bash
 cd backend
 pytest -v
+```
+
+### Verify the full stack
+```powershell
+# Windows PowerShell
+cd backend
+pytest -q
+cd ..\frontend
+npm.cmd run build
+npm.cmd run lint
 ```
 
 ### Test Coverage Highlights

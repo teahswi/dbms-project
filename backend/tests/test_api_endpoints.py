@@ -129,3 +129,18 @@ def test_immutable_audit_logs(client, auth_headers_admin):
     assert len(logs) > 0
     assert "action" in logs[0]
     assert "entity_type" in logs[0]
+
+
+def test_invalid_query_parameters_return_client_errors(client, auth_headers_analyst):
+    assert client.get("/api/assets?criticality=invalid", headers=auth_headers_analyst).status_code == 400
+    assert client.get("/api/users/login-history?limit=0", headers=auth_headers_analyst).status_code == 400
+    assert client.get("/api/audit-logs?limit=not-a-number", headers=auth_headers_analyst).status_code == 400
+
+
+def test_missing_alerts_are_not_escalated(client, auth_headers_analyst):
+    response = client.post(
+        "/api/alerts/escalate-to-incident",
+        headers=auth_headers_analyst,
+        json={"alert_ids": [999999]},
+    )
+    assert response.status_code == 404

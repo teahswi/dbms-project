@@ -1,4 +1,5 @@
 const API_BASE = '/api';
+const REQUEST_TIMEOUT_MS = 15000;
 
 function getAuthHeader(): Record<string, string> {
   const token = localStorage.getItem('cybershield_token');
@@ -11,22 +12,43 @@ async function handleResponse<T>(res: Response): Promise<T> {
     localStorage.removeItem('cybershield_token');
     localStorage.removeItem('cybershield_user');
   }
-  const data = await res.json();
+  const body = await res.text();
+  let data: { message?: string };
+  try {
+    data = body ? JSON.parse(body) : {};
+  } catch {
+    throw new Error(`Request failed with status ${res.status}`);
+  }
   if (!res.ok) {
     throw new Error(data.message || `Request failed with status ${res.status}`);
   }
-  return data;
+  return data as T;
+}
+
+async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('The request timed out. Check that the API is running and try again.');
+    }
+    throw new Error('Unable to reach the API. Check that the backend is running.');
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export const api = {
   // Auth
   async getDemoAccounts() {
-    const res = await fetch(`${API_BASE}/auth/demo-accounts`);
-    return handleResponse<{ status: string; accounts: any[]; default_password: string }>(res);
+    const res = await request(`${API_BASE}/auth/demo-accounts`);
+    return handleResponse<{ status: string; accounts: any[] }>(res);
   },
 
   async login(email: string, password: string) {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await request(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password })
@@ -35,7 +57,7 @@ export const api = {
   },
 
   async getCurrentUser() {
-    const res = await fetch(`${API_BASE}/auth/me`, {
+    const res = await request(`${API_BASE}/auth/me`, {
       headers: { ...getAuthHeader() }
     });
     return handleResponse<{ status: string; user: any }>(res);
@@ -380,4 +402,3 @@ export const api = {
     return handleResponse<any>(res);
   }
 };
-

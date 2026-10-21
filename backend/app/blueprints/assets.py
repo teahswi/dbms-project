@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from app.services.asset_service import AssetService
 from app.repositories.factory import get_repository
+from app.validation import optional_query_int
 
 assets_bp = Blueprint("assets", __name__, url_prefix="/api/assets")
 
@@ -10,13 +11,13 @@ assets_bp = Blueprint("assets", __name__, url_prefix="/api/assets")
 def list_assets():
     search = request.args.get("search")
     environment = request.args.get("environment")
-    criticality = request.args.get("criticality")
+    criticality = optional_query_int("criticality", 1, 5)
     department = request.args.get("department")
 
     assets = AssetService.list_assets(
         search=search,
         environment=environment,
-        criticality=int(criticality) if criticality else None,
+        criticality=criticality,
         department=department
     )
     return jsonify({"status": "success", "count": len(assets), "data": assets}), 200
@@ -62,7 +63,10 @@ def bulk_import_csv():
     content = ""
     if "file" in request.files:
         file = request.files["file"]
-        content = file.read().decode("utf-8")
+        try:
+            content = file.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return jsonify({"status": "error", "message": "CSV file must be UTF-8 encoded"}), 400
     else:
         content = request.get_data(as_text=True)
 

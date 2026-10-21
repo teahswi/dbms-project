@@ -37,6 +37,7 @@ export const Dashboard: React.FC = () => {
   const [activity, setActivity] = useState<any[]>([]);
   const [heatmap, setHeatmap] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -50,7 +51,7 @@ export const Dashboard: React.FC = () => {
         setActivity(actRes.data || []);
         setHeatmap(heatRes.data || []);
       } catch (err) {
-        console.error('Error loading posture dashboard:', err);
+        setError(err instanceof Error ? err.message : 'Unable to load dashboard data.');
       } finally {
         setLoading(false);
       }
@@ -59,6 +60,9 @@ export const Dashboard: React.FC = () => {
   }, []);
 
   if (loading || !metrics) {
+    if (error) {
+      return <div className="p-6 rounded-2xl border border-red-800 bg-red-950/30 text-red-300">{error}</div>;
+    }
     return (
       <div className="flex items-center justify-center h-96">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-cyan-400"></div>

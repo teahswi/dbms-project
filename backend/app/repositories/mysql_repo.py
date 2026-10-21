@@ -27,6 +27,8 @@ class MySQLRepository(BaseRepository):
             self.active_engine = "SQLite"
             self.backend_name = "SQLite (Local Standalone Demo)"
             self.engine = create_engine(f"sqlite:///{sqlite_path}", echo=False)
+            from sqlalchemy import event
+            event.listen(self.engine, "connect", self._enable_sqlite_constraints)
             self._init_sqlite_schema()
             logger.info("Initialized standalone SQLite relational database at: %s", sqlite_path)
             return
@@ -49,6 +51,8 @@ class MySQLRepository(BaseRepository):
                 self.active_engine = "SQLite"
                 self.backend_name = "SQLite (Fallback: MySQL Offline)"
                 self.engine = create_engine(f"sqlite:///{sqlite_path}", echo=False)
+                from sqlalchemy import event
+                event.listen(self.engine, "connect", self._enable_sqlite_constraints)
                 self._init_sqlite_schema()
             else:
                 logger.error("MySQL connection failed to %s:%s/%s: %s", host, port, database, str(e))
@@ -57,6 +61,12 @@ class MySQLRepository(BaseRepository):
                     f"Ensure MySQL daemon is active and credentials are correct, or set DB_BACKEND=sqlite "
                     f"or ENABLE_DEV_FALLBACK=true in .env. Root cause: {str(e)}"
                 ) from e
+
+    @staticmethod
+    def _enable_sqlite_constraints(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
     def get_backend_info(self) -> Dict[str, Any]:
         return {
@@ -1490,4 +1500,3 @@ class MySQLRepository(BaseRepository):
                 "aging_funnel": aging,
                 "backend_info": self.get_backend_info()
             }
-

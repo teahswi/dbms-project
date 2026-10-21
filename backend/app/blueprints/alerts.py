@@ -2,6 +2,8 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from app.repositories.factory import get_repository
 from app.services.audit_service import AuditService
+from app.constants import AlertStatus
+from app.validation import query_int
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/api/alerts")
 
@@ -30,11 +32,18 @@ def update_status(alert_id):
     new_status = data.get("status")
     if not new_status:
         return jsonify({"status": "error", "message": "status is required"}), 400
+    if new_status not in {
+        value for name, value in vars(AlertStatus).items()
+        if not name.startswith("_") and isinstance(value, str)
+    }:
+        return jsonify({"status": "error", "message": "Invalid alert status"}), 400
 
     repo = get_repository()
     user_id = get_jwt_identity()
     claims = get_jwt()
     updated = repo.update_alert_status(alert_id, new_status, user_id)
+    if not updated:
+        return jsonify({"status": "error", "message": "Alert not found"}), 404
 
     AuditService.log_action(
         user_id=user_id,
@@ -49,7 +58,7 @@ def update_status(alert_id):
 @alerts_bp.route("/events", methods=["GET"])
 @jwt_required()
 def list_events():
-    limit = int(request.args.get("limit", 100))
+    limit = query_int("limit", 100, 1, 500)
     repo = get_repository()
     events = repo.list_security_events(limit=limit)
     return jsonify({"status": "success", "count": len(events), "data": events}), 200
@@ -67,12 +76,14 @@ def escalate_to_incident():
     category = data.get("category", "MALWARE_OUTBREAK")
     severity = data.get("severity", "HIGH")
 
-    if not alert_ids:
-        return jsonify({"status": "error", "message": "At least one alert_id is required"}), 400
+    if not isinstance(alert_ids, list) or not alert_ids:
+        return jsonify({"status": "error", "message": "alert_ids must be a non-empty list"}), 400
 
     repo = get_repository()
-    # Fetch first alert to inspect asset
-    first_alert = repo.get_alert_by_id(alert_ids[0])
+    alerts = [repo.get_alert_by_id(alert_id) for alert_id in alert_ids]
+    if any(alert is None for alert in alerts):
+        return jsonify({"status": "error", "message": "One or more alerts were not found"}), 404
+    first_alert = alerts[0]
     asset_id = first_alert.get("asset_id") if first_alert else None
 
     user_id = get_jwt_identity()

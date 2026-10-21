@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt
 from app.repositories.factory import get_repository
 from app.services.auth_service import AuthService
 from app.services.audit_service import AuditService
+from app.validation import query_int
 
 users_bp = Blueprint("users", __name__, url_prefix="/api/users")
 
@@ -25,7 +26,7 @@ def get_rbac_matrix():
 @users_bp.route("/login-history", methods=["GET"])
 @jwt_required()
 def get_login_history():
-    limit = int(request.args.get("limit", 50))
+    limit = query_int("limit", 50, 1, 500)
     repo = get_repository()
     history = repo.get_login_history(limit=limit)
     return jsonify({"status": "success", "count": len(history), "data": history}), 200
@@ -54,4 +55,5 @@ def create_user():
         new_values={"email": new_user.get("email"), "name": new_user.get("full_name")}
     )
 
-    return jsonify({"status": "success", "data": new_user}), 201
+    public_user = {key: value for key, value in new_user.items() if key not in {"password_hash", "failed_login_attempts", "lockout_until"}}
+    return jsonify({"status": "success", "data": public_user}), 201

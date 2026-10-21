@@ -5,8 +5,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    SECRET_KEY = os.getenv("SECRET_KEY", "cybershield-production-jwt-key-default-2026")
-    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "cybershield-jwt-token-signing-secret-key-32bytes")
+    _is_production = os.getenv("FLASK_ENV", "development").lower() == "production"
+    _development_secret = "development-only-change-me"
+    SECRET_KEY = os.getenv("SECRET_KEY") or (_development_secret if not _is_production else None)
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") or (_development_secret if not _is_production else None)
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=8)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=7)
 
@@ -30,3 +32,6 @@ class Config:
     SQLITE_PATH = os.getenv("SQLITE_PATH", "cybershield_local.db")
 
     PORT = int(os.getenv("PORT", 5000))
+
+    if _is_production and (not SECRET_KEY or not JWT_SECRET_KEY):
+        raise RuntimeError("SECRET_KEY and JWT_SECRET_KEY must be set when FLASK_ENV=production")

@@ -41,6 +41,8 @@ class AssetService:
         repo = get_repository()
         old_asset = repo.get_asset_by_id(asset_id)
         updated_asset = repo.update_asset(asset_id, updates)
+        if not updated_asset:
+            return None
         AuditService.log_action(
             user_id=current_user.get("user_id"),
             user_email=current_user.get("email", "system"),

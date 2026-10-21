@@ -58,3 +58,13 @@ def test_manager_only_risk_treatment_approval(client, auth_headers_analyst, auth
     })
     assert res_allowed.status_code == 200
     assert res_allowed.get_json()["status"] == "success"
+
+
+def test_user_provisioning_does_not_return_password_hash(client, auth_headers_admin):
+    response = client.post(
+        "/api/users",
+        headers=auth_headers_admin,
+        json={"email": "safe-user@nexora.test", "full_name": "Safe User", "role_id": 1},
+    )
+    assert response.status_code == 201
+    assert "password_hash" not in response.get_json()["data"]

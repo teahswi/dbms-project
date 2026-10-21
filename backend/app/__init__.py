@@ -1,14 +1,17 @@
 """
 CyberShield Flask Application Factory
 """
+import logging
 import os
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.config import Config
 from app.repositories.factory import get_repository
 
 jwt = JWTManager()
+logger = logging.getLogger(__name__)
 
 def create_app(test_config=None):
     app = Flask(__name__)
@@ -17,8 +20,8 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
 
-    # Initialize CORS
-    CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+    allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    CORS(app, resources={r"/api/*": {"origins": [origin.strip() for origin in allowed_origins if origin.strip()]}}, supports_credentials=True)
 
     # Initialize JWT
     jwt.init_app(app)
@@ -38,10 +41,24 @@ def create_app(test_config=None):
             "message": "Authorization token has expired. Please log in again."
         }), 401
 
+    @jwt.invalid_token_loader
+    def invalid_token_response(reason):
+        return jsonify({"status": "error", "message": "Invalid authorization token"}), 401
+
     # Standard error handlers
     @app.errorhandler(400)
     def bad_request(e):
-        return jsonify({"status": "error", "message": str(e)}), 400
+        return jsonify({"status": "error", "message": getattr(e, "description", str(e))}), 400
+
+    @app.errorhandler(IntegrityError)
+    def integrity_error(e):
+        logger.warning("Database integrity error: %s", e.orig)
+        return jsonify({"status": "error", "message": "The request conflicts with existing or related data"}), 409
+
+    @app.errorhandler(SQLAlchemyError)
+    def database_error(e):
+        logger.exception("Database operation failed")
+        return jsonify({"status": "error", "message": "Database operation failed"}), 503
 
     @app.errorhandler(404)
     def not_found(e):
@@ -49,6 +66,7 @@ def create_app(test_config=None):
 
     @app.errorhandler(500)
     def server_error(e):
+        logger.exception("Unhandled application error")
         return jsonify({"status": "error", "message": "Internal server error occurred"}), 500
 
     # Initialize repository

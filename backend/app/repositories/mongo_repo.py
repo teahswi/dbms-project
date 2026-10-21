@@ -4,6 +4,7 @@ Uses PyMongo with embedded document models, aggregation pipelines, and compound 
 Includes in-memory document store fallback when local MongoDB daemon is offline.
 """
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from app.repositories.base import BaseRepository
@@ -96,7 +97,7 @@ class MongoRepository(BaseRepository):
         if self.is_fallback:
             u = next((x for x in self.store["users"] if x.get("email", "").lower() == email.lower()), None)
             return dict(u) if u else None
-        doc = self.db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
+        doc = self.db.users.find_one({"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}})
         if doc:
             doc["user_id"] = str(doc.get("_id"))
         return doc
@@ -124,7 +125,8 @@ class MongoRepository(BaseRepository):
             return res
         query = {}
         if search:
-            query["$or"] = [{"full_name": {"$regex": search, "$options": "i"}}, {"email": {"$regex": search, "$options": "i"}}]
+            escaped_search = re.escape(search)
+            query["$or"] = [{"full_name": {"$regex": escaped_search, "$options": "i"}}, {"email": {"$regex": escaped_search, "$options": "i"}}]
         if role:
             query["role"] = role
         docs = list(self.db.users.find(query))
@@ -148,10 +150,15 @@ class MongoRepository(BaseRepository):
 
     def update_user(self, user_id: Any, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if self.is_fallback:
-            u = self.get_user_by_id(user_id)
-            if u:
-                u.update(updates)
-            return u
+            user_index = next(
+                (index for index, candidate in enumerate(self.store["users"])
+                 if str(candidate.get("user_id")) == str(user_id)),
+                None,
+            )
+            if user_index is None:
+                return None
+            self.store["users"][user_index].update(updates)
+            return dict(self.store["users"][user_index])
         from bson import ObjectId
         self.db.users.update_one({"_id": ObjectId(user_id)}, {"$set": updates})
         return self.get_user_by_id(user_id)
@@ -777,4 +784,3 @@ class MongoRepository(BaseRepository):
             "aging_funnel": aging,
             "backend_info": self.get_backend_info()
         }
-

@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from app.services.auth_service import AuthService
+import re
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
@@ -9,8 +10,7 @@ def get_demo_accounts():
     """Returns quick switcher accounts for testing all five personas."""
     return jsonify({
         "status": "success",
-        "accounts": AuthService.get_demo_accounts(),
-        "default_password": "Nexora@2026"
+        "accounts": AuthService.get_demo_accounts()
     }), 200
 
 @auth_bp.route("/login", methods=["POST"])
@@ -21,8 +21,12 @@ def login():
 
     if not email or not password:
         return jsonify({"status": "error", "message": "Email and password are required"}), 400
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return jsonify({"status": "error", "message": "A valid email address is required"}), 400
+    if len(password) > 256:
+        return jsonify({"status": "error", "message": "Password is too long"}), 400
 
-    ip_address = request.headers.get("X-Forwarded-For", request.remote_addr or "127.0.0.1")
+    ip_address = request.remote_addr or "127.0.0.1"
     user_agent = request.headers.get("User-Agent", "Unknown")
 
     result, error = AuthService.authenticate_user(email, password, ip_address, user_agent)

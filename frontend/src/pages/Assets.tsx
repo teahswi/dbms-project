@@ -27,6 +27,7 @@ export const Assets: React.FC = () => {
   const [showImportModal, setShowImportModal] = useState(false);
   const [csvContent, setCsvContent] = useState('');
   const [importResult, setImportResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // New Asset Form State
   const [newAsset, setNewAsset] = useState({
@@ -41,6 +42,7 @@ export const Assets: React.FC = () => {
 
   const loadAssets = async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await api.getAssets({
         search,
@@ -49,7 +51,7 @@ export const Assets: React.FC = () => {
       });
       setAssets(res.data || []);
     } catch (err) {
-      console.error('Failed to load assets:', err);
+      setError(err instanceof Error ? err.message : 'Unable to load assets.');
     } finally {
       setLoading(false);
     }
@@ -75,7 +77,7 @@ export const Assets: React.FC = () => {
       setShowCreateModal(false);
       loadAssets();
     } catch (err) {
-      alert('Error creating asset: ' + err);
+      setError(err instanceof Error ? err.message : 'Unable to create asset.');
     }
   };
 
@@ -86,7 +88,7 @@ export const Assets: React.FC = () => {
       setImportResult(res.data);
       loadAssets();
     } catch (err: any) {
-      alert('CSV Import error: ' + err.message);
+      setError(err instanceof Error ? err.message : 'CSV import failed.');
     }
   };
 
@@ -124,6 +126,7 @@ nx-developer-lap-904.nexora.corp,192.168.1.99,2,STAGING,macOS Sonoma`;
       </div>
 
       {/* Filter & Search Bar */}
+      {error && <div className="p-3 rounded-xl border border-red-800 bg-red-950/30 text-red-300 text-xs">{error}</div>}
       <div className="glass-panel rounded-2xl p-4 border border-slate-800 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px] relative">
           <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
