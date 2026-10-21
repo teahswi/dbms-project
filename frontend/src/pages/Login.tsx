@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Shield, Lock, Mail, ArrowRight, UserCheck, AlertCircle } from 'lucide-react';
 
 export const Login: React.FC = () => {
   const { login, loginAsDemo, isLoading } = useAuth();
+  const navigate = useNavigate();
   const [email, setEmail] = useState('analyst@nexora.test');
   const [password, setPassword] = useState('Nexora@2026');
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +53,7 @@ export const Login: React.FC = () => {
     setError(null);
     try {
       await login(email, password);
+      navigate('/', { replace: true });
     } catch (err: any) {
       setError(err.message || 'Login failed. Please verify credentials.');
     }
@@ -60,6 +63,7 @@ export const Login: React.FC = () => {
     setError(null);
     try {
       await loginAsDemo(demoEmail);
+      navigate('/', { replace: true });
     } catch (err: any) {
       setError(err.message || 'Demo login failed.');
     }
