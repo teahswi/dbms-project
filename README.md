@@ -223,10 +223,11 @@ source venv/bin/activate
 pip install -r backend/requirements.txt
 
 # Run the deterministic seed script
-python backend/app/seeds/seed_data.py
+cd backend
+python -m app.seeds.seed_data
 
 # Start the Flask API server (runs on http://localhost:5000)
-python backend/run.py
+python run.py
 ```
 
 #### 4. Setup React Frontend
